@@ -178,6 +178,16 @@ export async function createExperience(
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.2;
   renderer.xr.enabled = true;
+  // Without this, three.js defaults to the 'local' reference space — origin
+  // near head height at the moment the session starts, not the floor. Every
+  // world position in this scene (the globe at y=1.35, the tabletop, the
+  // wrist panel) was authored assuming a floor-relative origin, so on a
+  // headset that actually negotiates 'local' the globe would appear roughly
+  // a head-height's distance from where it's meant to be — easily read as
+  // "not there" if that puts it above eye level or behind the viewer.
+  // 'local-floor' is requested as an optional session feature below, but
+  // requesting it doesn't make three.js *use* it — this does.
+  renderer.xr.setReferenceSpaceType("local-floor");
   renderer.xr.setFramebufferScaleFactor(1);
   renderer.xr.setFoveation(FOVEATION_MIN);
   container.appendChild(renderer.domElement);
@@ -249,6 +259,10 @@ export async function createExperience(
 
   const panels = [wrist, leftPanel, rightPanel];
   const worldPanels = [leftPanel, rightPanel];
+  // wrist.mesh is parented onto the hand grip later (attachWrist); these two
+  // are world-anchored beside the city, so they need to be in the scene
+  // graph directly or they never render at all, in VR or on desktop.
+  scene.add(leftPanel.mesh, rightPanel.mesh);
 
   const hoverQuad = new THREE.Mesh(
     new THREE.PlaneGeometry(1, 1),
