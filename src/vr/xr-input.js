@@ -169,6 +169,16 @@ export function createPointers(
     pointer.controller.getWorldPosition(tmpA);
     pointer.controller.getWorldQuaternion(tmpQ);
     raycaster.set(tmpA, tmpN.set(0, 0, -1).applyQuaternion(tmpQ));
+    // THREE.Sprite.raycast() reads raycaster.camera to face the sprite
+    // toward the viewer before testing it — and throws if that's unset.
+    // Every floating text label and card in this game (the globe's "ENTER
+    // CHENNAI" card, the thermal toggle, the readout/hint sprites) is a
+    // Sprite, and this pointer is only ever cast while presenting, so the
+    // XR camera is always the right one to give it. Missing this line is
+    // silent on desktop (mouse picking never reaches this function) and
+    // fatal on a real headset the instant a tracked hand points at any of
+    // them — this was never exercised without real hand-tracking data.
+    raycaster.camera = renderer.xr.getCamera();
     return raycaster.intersectObjects(targets, false)[0] || null;
   }
 
