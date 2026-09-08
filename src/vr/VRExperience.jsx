@@ -77,9 +77,9 @@ export default function VRExperience({ zones, supported, onClose }) {
     chosen = state?.chosenIds || [],
     result = state?.result,
     available = state?.available ?? 0,
-    par = state?.par;
+    capacity = state?.capacity;
 
-  const beatingPar = par && result ? result.total <= par.total && result.drop >= par.drop : null;
+  const countOf = (id) => chosen.filter((c) => c === id).length;
 
   return (
     <div className="vr-shell">
@@ -144,13 +144,28 @@ export default function VRExperience({ zones, supported, onClose }) {
               On desktop, drag to orbit your view and click the marker to
               dive in.
             </p>
-            <button
-              className="vr-focus"
-              onClick={() => call("dive")}
-              disabled={mode === "diving"}
-            >
-              {mode === "diving" ? "Falling toward Chennai…" : "Dive in ↓"}
-            </button>
+            <div className="vr-globe-actions">
+              <button
+                className="vr-focus"
+                onClick={() => call("dive")}
+                disabled={mode === "diving"}
+              >
+                {mode === "diving" ? "Falling toward Chennai…" : "Dive in ↓"}
+              </button>
+              <button
+                onClick={() => call("toggleThermal")}
+                aria-pressed={state?.thermalOn}
+              >
+                🌡 {state?.thermalOn ? "Live thermal: on" : "Live thermal view"}
+              </button>
+            </div>
+            <p className="vr-note">
+              Thermal view loads real NASA MODIS land-surface-temperature
+              imagery live from NASA's public GIBS service. Dark gaps are
+              cloud cover the satellite couldn't see through, not zero
+              temperature — and if the fetch fails, the globe stays on the
+              stylised map rather than showing a fake reading.
+            </p>
           </div>
         </div>
       )}
@@ -240,7 +255,16 @@ export default function VRExperience({ zones, supported, onClose }) {
               </small>
             </div>
 
-            <h3>Three ways to cool it</h3>
+            <h3>Build as many as the land allows</h3>
+            <p className="vr-subtle">
+              Every measure can be placed more than once — there's no fixed
+              limit of one park per zone. What limits you is real: each
+              zone's own buildable land (non-built, non-road area, from its
+              own coverage data), and each measure's own footprint. Placing
+              near the gold-ringed hotspot on the map — the zone's real
+              building-density cluster — cools more than the same measure
+              placed in a quiet corner.
+            </p>
             {state?.carrying && (
               <p className="vr-carrying" role="status">
                 Carrying a measure — click on the map to place it. It snaps into its own zone.
@@ -252,29 +276,33 @@ export default function VRExperience({ zones, supported, onClose }) {
               </p>
             )}
             {measures.map((item) => {
-              const placed = chosen.includes(item.id);
+              const count = countOf(item.id);
               return (
                 <button
                   className="vr-intervention"
                   key={item.id}
                   onClick={() =>
-                    placed ? call("toggle", item.id) : call("lift", item.id)
+                    count > 0 ? call("toggle", item.id) : call("lift", item.id)
                   }
-                  aria-pressed={placed}
+                  aria-pressed={count > 0}
                 >
                   <span>
-                    {placed ? "✓" : "+"} {item.name}
+                    {count > 0 ? `✓ ×${count}` : "+"} {item.name}
                   </span>
                   <strong>
                     −{(item.local_reference_drop_c ?? 0).toFixed(1)}°C locally{" "}
-                    <small>{money(item.estimated_cost_inr)}</small>
+                    <small>{money(item.estimated_cost_inr)} each</small>
                   </strong>
                   <small>
                     −{item.temp_drop}°C spread across the zone ·{" "}
                     {item.effect_radius_m}m radius · {item.authority}-level
                     approval
                   </small>
-                  <small>{placed ? "Placed — click to remove" : item.source}</small>
+                  <small>
+                    {count > 0
+                      ? "Click to remove the most recent one · click the placed object in-world to remove any"
+                      : item.source}
+                  </small>
                 </button>
               );
             })}
@@ -283,9 +311,9 @@ export default function VRExperience({ zones, supported, onClose }) {
               <div className="vr-impact">
                 <strong>−{result.drop.toFixed(2)}°C</strong>
                 <span>
-                  Zone-average cooling
+                  Zone-average cooling · {result.count} measure{result.count === 1 ? "" : "s"} placed
                   {available > 0 &&
-                    ` · ${available.toFixed(2)}°C available here`}
+                    ` · ${available.toFixed(2)}°C single-of-each ceiling`}
                 </span>
                 <b>{money(result.total)}</b>
                 <span>
@@ -294,19 +322,21 @@ export default function VRExperience({ zones, supported, onClose }) {
               </div>
             )}
 
-            {par && (
-              <div className={"vr-par" + (beatingPar ? " vr-par-beat" : "")}>
-                <div className="vr-overline">DESIGN CHALLENGE</div>
+            {capacity && (
+              <div className={"vr-capacity" + (capacity.pct >= 0.98 ? " vr-capacity-full" : "")}>
+                <div className="vr-overline">LAND CAPACITY, THIS ZONE</div>
+                <div className="vr-capacity-bar">
+                  <div className="vr-capacity-fill" style={{ width: `${Math.round(capacity.pct * 100)}%` }} />
+                </div>
                 <span>
-                  Par for this zone: reach 60% of its cooling ceiling for{" "}
-                  <b>{money(par.total)}</b> or less.
+                  {Math.round(capacity.usedSqm).toLocaleString()} m² used of{" "}
+                  {Math.round(capacity.buildableSqm).toLocaleString()} m² buildable land
+                  {" "}({Math.round(capacity.pct * 100)}%)
                 </span>
                 <strong>
-                  {beatingPar === null
-                    ? "Place a measure to compare"
-                    : beatingPar
-                      ? "Under par — nicely optimised"
-                      : "Over par — try a cheaper combination"}
+                  {capacity.pct >= 0.98
+                    ? "No room left — this zone's non-built, non-road land is fully committed"
+                    : `${Math.round(capacity.remainingSqm).toLocaleString()} m² still available`}
                 </strong>
               </div>
             )}

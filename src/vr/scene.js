@@ -5,7 +5,7 @@ import { createGlobe } from "./globe";
 import { Panel, MIN_TARGET, INK } from "./panel";
 import { createPointers } from "./xr-input";
 import { createGame } from "./game";
-import { impact, money, project } from "./model";
+import { money, project } from "./model";
 import { createAudio } from "./audio";
 import { fetchLiveClimate, fetchVRBootstrap } from "../utils/api";
 
@@ -152,17 +152,28 @@ export async function createExperience(
   zones,
   { signal, onProgress, onState, onError, onExit },
 ) {
+  // Mobile browser chrome (Quest's included) can report a 0x0 or stale
+  // container size for the first paint or two — the UI hasn't finished its
+  // layout pass yet. A camera built with a 0 or NaN aspect ratio renders
+  // nothing at all, silently, with no error: exactly a black screen that
+  // "fixes itself" the moment anything later forces a relayout. Falling back
+  // to the window's own size when the container isn't ready yet avoids ever
+  // creating that broken first frame.
+  const size = () => ({
+    w: container.clientWidth || window.innerWidth || 1,
+    h: container.clientHeight || window.innerHeight || 1,
+  });
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(SPACE);
   scene.fog = new THREE.FogExp2(SPACE, 0.011);
-  const camera = new THREE.PerspectiveCamera(52, container.clientWidth / container.clientHeight, 0.015, 160);
+  const camera = new THREE.PerspectiveCamera(52, size().w / size().h, 0.015, 160);
   camera.position.set(0, 1.5, 0.3);
   const rig = new THREE.Group();
   rig.add(camera);
   scene.add(rig);
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: "high-performance" });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.6));
-  renderer.setSize(container.clientWidth, container.clientHeight);
+  renderer.setSize(size().w, size().h);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.2;
@@ -222,7 +233,22 @@ export async function createExperience(
   wrist.mesh.rotation.set(-0.5, 0.32, 0.12);
   wrist.mesh.position.set(0.008, 0.045, -0.055);
   wrist.mesh.visible = false;
-  const panels = [wrist];
+
+  // Two floating windows flanking the city — the in-world equivalent of the
+  // flat build's zone-list and zone-detail sidebars, since a headset player
+  // never sees flat HTML at all. Left picks a zone; right shows everything
+  // about the one that's selected: temperature, live weather, land capacity,
+  // and every cost involved. World-anchored beside the tabletop rather than
+  // hand-attached, so both hands stay free for actually placing measures.
+  const leftPanel = new Panel(760, 1080, 0.46);
+  const rightPanel = new Panel(760, 1080, 0.46);
+  leftPanel.mesh.visible = false;
+  rightPanel.mesh.visible = false;
+  let leftPage = 0;
+  const ZONES_PER_PAGE = 6;
+
+  const panels = [wrist, leftPanel, rightPanel];
+  const worldPanels = [leftPanel, rightPanel];
 
   const hoverQuad = new THREE.Mesh(
     new THREE.PlaneGeometry(1, 1),
@@ -248,27 +274,6 @@ export async function createExperience(
     handles.push(handle);
   });
 
-  // --- Par: an honest framing of "compete with the best" -------------------
-  // There is no live opponent model in this build — that would be a fabricated
-  // claim. Instead, every zone carries a "par" cost computed from its own
-  // dataset (the cheapest single measure that reaches 60% of the zone's
-  // achievable cooling), so a player has something concrete to beat that is
-  // never inflated or invented.
-  function parFor(zoneId) {
-    const list = state.details[zoneId]?.interventions || [];
-    if (!list.length) return null;
-    const ceiling = impact(list, list.map((i) => i.id)).drop;
-    const target = ceiling * 0.6;
-    let best = null;
-    for (let mask = 1; mask < 1 << list.length; mask++) {
-      const ids = list.filter((_, i) => mask & (1 << i)).map((i) => i.id);
-      const r = impact(list, ids);
-      if (r.drop >= target && (!best || r.total < best.total)) best = r;
-    }
-    return best ? { total: best.total, drop: r_round(best.drop) } : null;
-  }
-  const r_round = (v) => Math.round(v * 100) / 100;
-
   const state = {
     mode: "globe", // 'globe' | 'diving' | 'city'
     zone: zones.find((z) => z.id === "mount_road") || zones[0],
@@ -293,12 +298,14 @@ export async function createExperience(
   const raycaster = new THREE.Raycaster(), cursor = new THREE.Vector2();
   let game = null;
   const panelMeshes = panels.map((p) => p.mesh);
+  const worldPanelMeshes = worldPanels.map((p) => p.mesh);
   const hitTargets = () => {
     if (state.mode === "globe") {
-      return [...(renderer.xr.isPresenting ? panelMeshes : []), ...globe.grabTargets, ...globe.enterTargets];
+      return [...(renderer.xr.isPresenting ? panelMeshes : []), ...globe.grabTargets, ...globe.enterTargets, ...globe.thermalTargets];
     }
     return [
-      ...(renderer.xr.isPresenting ? panelMeshes : []),
+      ...(renderer.xr.isPresenting ? [wrist.mesh] : []),
+      ...worldPanelMeshes,
       ...(game ? game.targets() : []),
       ...handles,
       ...city.markers,
@@ -307,11 +314,11 @@ export async function createExperience(
   };
   const pokeTargets = () =>
     renderer.xr.isPresenting
-      ? [...panelMeshes, ...(state.mode === "city" && game ? game.pokeTargets() : []), ...(state.mode === "globe" ? globe.enterTargets.filter((t) => t.userData.halfSize) : [])]
+      ? [...panelMeshes, ...(state.mode === "city" && game ? game.pokeTargets() : []), ...(state.mode === "globe" ? [...globe.enterTargets, ...globe.thermalTargets].filter((t) => t.userData.halfSize) : [])]
       : [];
 
   const chosen = () => (game ? game.chosenFor(state.zone.id) : []);
-  const result = () => impact(state.details[state.zone.id]?.interventions || [], chosen());
+  const result = () => (game ? game.resultFor(state.zone.id) : { drop: 0, total: 0, count: 0 });
 
   function publish() {
     onState({
@@ -319,13 +326,11 @@ export async function createExperience(
       chosenIds: chosen(),
       carrying: game?.isCarrying() ? game.state.carrying.item.id : null,
       result: result(),
-      available: impact(
-        state.details[state.zone.id]?.interventions || [],
-        (state.details[state.zone.id]?.interventions || []).map((i) => i.id),
-      ).drop,
+      available: game ? game.ceilingFor(state.zone.id).drop : 0,
+      capacity: game ? game.capacityFor(state.zone.id) : null,
       detail: state.details[state.zone.id],
       reading: state.weather[state.zone.id],
-      par: state.details[state.zone.id] ? parFor(state.zone.id) : null,
+      thermalOn: globe.isThermalOn(),
     });
   }
 
@@ -356,6 +361,103 @@ export async function createExperience(
     );
     wrist.finish();
     state.chosenIds = game ? game.chosenFor(zoneId) : [];
+    drawLeftPanel();
+    drawRightPanel();
+  }
+
+  /** Left floating window: pick a zone. The in-world equivalent of the flat sidebar's zone list. */
+  function drawLeftPanel() {
+    if (state.mode !== "city") return;
+    leftPanel.mesh.visible = true;
+    const pageCount = Math.ceil(zones.length / ZONES_PER_PAGE);
+    leftPage = Math.min(leftPage, pageCount - 1);
+    const y0 = leftPanel.begin(`Page ${leftPage + 1} of ${pageCount}`, "18 HOTSPOTS · PICK A ZONE");
+    const start = leftPage * ZONES_PER_PAGE;
+    const rowH = 118;
+    zones.slice(start, start + ZONES_PER_PAGE).forEach((zone, i) => {
+      const y = y0 + 16 + i * rowH;
+      const active = zone.id === state.zone.id;
+      leftPanel.button(
+        `${String(start + i + 1).padStart(2, "0")}  ${zone.name}`,
+        24,
+        y,
+        712,
+        rowH - 12,
+        () => select(zone.id),
+        active,
+      );
+      leftPanel.text(
+        Number.isFinite(zone.lst_celsius) ? `${zone.risk_level} risk · ${zone.lst_celsius}°C modelled` : "Heat data unavailable",
+        44,
+        y + rowH - 24,
+        20,
+        INK.muted,
+      );
+    });
+    const navY = y0 + 16 + ZONES_PER_PAGE * rowH + 8;
+    leftPanel.button("◀ Prev", 24, navY, 340, MIN_TARGET, () => {
+      leftPage = (leftPage - 1 + pageCount) % pageCount;
+      drawLeftPanel();
+    });
+    leftPanel.button("Next ▶", 396, navY, 340, MIN_TARGET, () => {
+      leftPage = (leftPage + 1) % pageCount;
+      drawLeftPanel();
+    });
+    leftPanel.finish();
+  }
+
+  /** Right floating window: everything about the selected zone — temperature, weather, land capacity, and every cost involved. */
+  function drawRightPanel() {
+    if (state.mode !== "city" || !game) return;
+    rightPanel.mesh.visible = true;
+    const zone = state.zone;
+    const r = state.before ? { drop: 0, total: 0, count: 0 } : game.resultFor(zone.id);
+    const ceiling = game.ceilingFor(zone.id);
+    const cap = game.capacityFor(zone.id);
+    const reading = state.weather[zone.id];
+
+    let y = rightPanel.begin(zone.name, "ZONE DETAIL & CAPACITY");
+    y += 20;
+    rightPanel.stat(`${(zone.lst_celsius - r.drop).toFixed(2)}°C`, "Modelled surface temperature now", 24, y, 66, INK.warm);
+    y += 60;
+    rightPanel.row("Baseline zone temperature", `${zone.lst_celsius.toFixed(2)}°C`, 24, y, 712, 24);
+    y += 36;
+    rightPanel.row("Cooling achieved", `−${r.drop.toFixed(2)}°C of ${ceiling.drop.toFixed(2)}°C ceiling`, 24, y, 712, 24);
+    y += 36;
+    const liveTemp = Number.isFinite(reading?.air_temp_c) ? `${reading.air_temp_c}°C air (live)` : "Live weather unavailable";
+    rightPanel.row("Open-Meteo reading", liveTemp, 24, y, 712, 24);
+    y += 48;
+
+    rightPanel.text("LAND CAPACITY", 24, y, 22, INK.accent, 700, 0.12);
+    y += 20;
+    rightPanel.row("Buildable land (this zone)", `${Math.round(cap.buildableSqm).toLocaleString()} m²`, 24, y, 712, 24);
+    y += 32;
+    rightPanel.row("Used by placed measures", `${Math.round(cap.usedSqm).toLocaleString()} m² (${(cap.pct * 100).toFixed(0)}%)`, 24, y, 712, 24);
+    y += 32;
+    const bars = 42, filled = Math.round(cap.pct * bars);
+    rightPanel.text("█".repeat(filled) + "░".repeat(bars - filled), 24, y, 22, cap.pct > 0.9 ? INK.caution : INK.accent);
+    y += 44;
+
+    rightPanel.text("COST", 24, y, 22, INK.accent, 700, 0.12);
+    y += 20;
+    rightPanel.row("Measures placed", `${r.count}`, 24, y, 712, 24);
+    y += 32;
+    rightPanel.row("Material cost", money(r.material || 0), 24, y, 712, 24);
+    y += 32;
+    rightPanel.row("Total incl. install + contingency", money(r.total), 24, y, 712, 24);
+    y += 44;
+
+    rightPanel.wrap(
+      "Costs are catalogue assumptions, not contractor quotes. Cooling keeps 75% of its sum once more than one measure category is placed, and can never model a zone cooler than the study's own rural baseline.",
+      24,
+      y,
+      712,
+      19,
+      INK.muted,
+      26,
+      4,
+    );
+    rightPanel.finish();
   }
 
   function select(id) {
@@ -367,7 +469,8 @@ export async function createExperience(
   }
   function apply() {
     const r = result();
-    city.apply(state.zone.id, state.before ? [] : r.selected, state.before ? 0 : r.drop);
+    const selected = (r.byCategory || []).map((category) => ({ category }));
+    city.apply(state.zone.id, state.before ? [] : selected, state.before ? 0 : r.drop);
   }
   function toggle(id) {
     if (!state.details[state.zone.id]?.interventions.some((i) => i.id === id)) return;
@@ -471,6 +574,8 @@ export async function createExperience(
     if (state.mode !== "city") return;
     state.mode = "globe";
     city.root.visible = false;
+    leftPanel.mesh.visible = false;
+    rightPanel.mesh.visible = false;
     globe.root.visible = true;
     globe.root.scale.setScalar(GLOBE_SCALE);
     globe.root.position.copy(GLOBE_POSITION);
@@ -544,6 +649,7 @@ export async function createExperience(
     city,
     zones,
     audio,
+    baseline: data?.baseline,
     onChange: (zoneId) => {
       const zone = zones.find((z) => z.id === zoneId);
       if (zone) state.zone = zone;
@@ -551,6 +657,10 @@ export async function createExperience(
       draw();
       publish();
       refreshWeather();
+    },
+    onRefused: () => {
+      draw();
+      publish();
     },
   });
   game.setDetails(state.details);
@@ -593,6 +703,12 @@ export async function createExperience(
       if (hit?.object.userData.enterTarget) {
         dive();
         if (pointer) pointers.pulse(pointer, 0.5, 22);
+        return;
+      }
+      if (hit?.object.userData.thermalToggle) {
+        globe.toggleThermal().then(publish);
+        if (pointer) pointers.pulse(pointer, 0.4, 18);
+        audio.ping();
         return;
       }
       if (hit?.object.userData.panel) {
@@ -771,6 +887,7 @@ export async function createExperience(
     return raycaster.intersectObject(city.grabSurface, false)[0] || null;
   }
   const carryOrigin = new THREE.Vector3(), carryDirection = new THREE.Vector3(), carryQuaternion = new THREE.Quaternion();
+  const panelCam = new THREE.Vector3(), panelAnchor = new THREE.Vector3();
 
   let hoverRegion = null;
   function updateHover() {
@@ -834,13 +951,22 @@ export async function createExperience(
   renderer.domElement.addEventListener("pointerdown", down);
   renderer.domElement.addEventListener("pointerup", up);
   renderer.domElement.addEventListener("pointermove", move);
-  resize = new ResizeObserver(() => {
+  function resync() {
     if (renderer.xr.isPresenting) return;
-    camera.aspect = container.clientWidth / container.clientHeight;
+    const { w, h } = size();
+    camera.aspect = w / h;
     camera.updateProjectionMatrix();
-    renderer.setSize(container.clientWidth, container.clientHeight);
-  });
+    renderer.setSize(w, h);
+  }
+  resize = new ResizeObserver(resync);
   resize.observe(container);
+  // Belt and braces for the mobile-browser-chrome case above: re-measure a
+  // couple of times just after mount, since a layout that settles late would
+  // otherwise never trigger the observer at all (nothing "resized" from its
+  // point of view — it was simply wrong from frame one).
+  requestAnimationFrame(resync);
+  setTimeout(resync, 250);
+  setTimeout(resync, 1000);
   sessionStart = () => {
     controls.enabled = false;
     wrist.mesh.visible = true;
@@ -913,6 +1039,17 @@ export async function createExperience(
     const viewer = active ? renderer.xr.getCamera() : camera;
     if (state.mode === "city" && game) game.update(dt, time / 1000, viewer, carryGroundHit());
     if (state.mode === "city") city.updateLOD(viewer);
+    if (state.mode === "city") {
+      // The two floating windows track the city's own position (so dragging
+      // the tabletop carries them along) and always face whoever is looking,
+      // the same billboarding the solution cards use.
+      viewer.getWorldPosition(panelCam);
+      city.root.getWorldPosition(panelAnchor);
+      leftPanel.mesh.position.copy(panelAnchor).add(new THREE.Vector3(-1.05, 0.34, 0.15));
+      rightPanel.mesh.position.copy(panelAnchor).add(new THREE.Vector3(1.05, 0.34, 0.15));
+      leftPanel.mesh.lookAt(panelCam);
+      rightPanel.mesh.lookAt(panelCam);
+    }
     renderer.render(scene, camera);
     frameCount++;
     frameTime += dt;
@@ -981,5 +1118,7 @@ export async function createExperience(
   return {
     enterVR, dispose, select, toggle, lift, before, resetMeasures, scale, split, reassemble,
     home, focusZone, flight, sound, dive, ascend,
+    toggleThermal: () => globe.toggleThermal().then(publish),
+    isThermalOn: () => globe.isThermalOn(),
   };
 }

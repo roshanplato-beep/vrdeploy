@@ -1,4 +1,4 @@
-.vr-studio {
+.vr-shell {
   position: fixed;
   inset: 0;
   z-index: 1000;
@@ -9,7 +9,7 @@
     system-ui,
     sans-serif;
 }
-.vr-studio * {
+.vr-shell * {
   box-sizing: border-box;
 }
 .vr-viewport {
@@ -22,7 +22,7 @@
   height: 100%;
   touch-action: none;
 }
-.vr-studio button {
+.vr-shell button {
   font: inherit;
   cursor: pointer;
   color: #c9e6e6;
@@ -34,19 +34,19 @@
     background 0.15s,
     border-color 0.15s;
 }
-.vr-studio button:hover {
+.vr-shell button:hover {
   background: #19404b;
   border-color: #62dac6;
 }
-.vr-studio button:focus-visible {
+.vr-shell button:focus-visible {
   outline: 3px solid #ffba75;
   outline-offset: 2px;
 }
-.vr-studio button[aria-pressed="true"] {
+.vr-shell button[aria-pressed="true"] {
   background: #12483e;
   border-color: #46cda9;
 }
-.vr-studio button:disabled {
+.vr-shell button:disabled {
   opacity: 0.45;
   cursor: wait;
 }
@@ -86,7 +86,7 @@
   display: flex;
   gap: 8px;
 }
-.vr-studio .vr-primary {
+.vr-shell .vr-primary {
   background: #51d8b2;
   color: #082820;
   font-weight: 750;
@@ -545,7 +545,7 @@
   }
 }
 
-.vr-studio * {
+.vr-shell * {
   scrollbar-width: thin;
   scrollbar-color: #28545d #091e27;
 }
@@ -633,32 +633,58 @@
   background: rgba(18, 103, 95, 0.38);
 }
 
-/* --- Design-challenge "par" readout ---------------------------------------- */
-.vr-par {
+/* --- Land-capacity readout -------------------------------------------------- */
+.vr-capacity {
   margin: 12px 0;
   padding: 12px 14px;
   border-radius: 12px;
   border: 1px solid #2a6a75;
   background: rgba(9, 30, 39, 0.65);
 }
-.vr-par span {
+.vr-capacity-bar {
+  height: 8px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  margin: 6px 0 8px;
+}
+.vr-capacity-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #58eed0, #ffa766);
+  border-radius: 5px;
+  transition: width 0.25s ease;
+}
+.vr-capacity span {
   display: block;
   font-size: 13px;
   color: #b6d3da;
   margin-bottom: 6px;
 }
-.vr-par span b {
-  color: #eafff7;
-}
-.vr-par strong {
+.vr-capacity strong {
   display: block;
   font-size: 14px;
-  color: #edc38b;
-}
-.vr-par-beat {
-  border-color: #3fd9bd;
-  background: rgba(18, 103, 95, 0.28);
-}
-.vr-par-beat strong {
   color: #64efbd;
+}
+.vr-capacity-full {
+  border-color: #ff9757;
+  background: rgba(255, 151, 87, 0.14);
+}
+.vr-capacity-full strong {
+  color: #ffa766;
+}
+
+/* --- Globe title-screen actions -------------------------------------------- */
+.vr-globe-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+.vr-globe-actions .vr-focus {
+  flex: 1 1 auto;
+  margin-top: 0;
+}
+.vr-globe-actions button[aria-pressed="true"] {
+  background: rgba(255, 122, 89, 0.24);
+  border-color: #ff7a59;
+  color: #ffd9c9;
 }

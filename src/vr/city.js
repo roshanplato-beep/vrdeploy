@@ -141,6 +141,12 @@ export async function buildCity(zones, onProgress, signal) {
     if (signal.aborted) throw e;
   }
   const buildingsByZone = new Map(zones.map((z) => [z.id, []]));
+  // Area-weighted accumulator for each zone's real building-density hotspot
+  // — the sub-point where the mapped footprints actually cluster, which is
+  // also where a cooling measure does the most good. Weighted by footprint
+  // area (shoelace formula) rather than by count, so one large mall counts
+  // for more than a dozen shed-sized outbuildings.
+  const hotspotAccum = new Map(zones.map((z) => [z.id, { sx: 0, sz: 0, weight: 0 }]));
   const roads = [],
     water = [],
     coast = [],
@@ -178,6 +184,16 @@ export async function buildCity(zones, onProgress, signal) {
         g.rotateX(-Math.PI / 2);
         g.translate(0, 0.035, 0);
         buildingsByZone.get(nearest.id).push(g);
+        let area = 0;
+        for (let i = 0; i < p.length; i++) {
+          const [x1, z1] = p[i], [x2, z2] = p[(i + 1) % p.length];
+          area += x1 * z2 - x2 * z1;
+        }
+        area = Math.max(1e-6, Math.abs(area) / 2);
+        const acc = hotspotAccum.get(nearest.id);
+        acc.sx += x * area;
+        acc.sz += z * area;
+        acc.weight += area;
       } else if (f.kind === "road") roads.push(p);
       else if (f.kind === "coast") coast.push(p);
       else if (f.kind === "water") water.push(p);
@@ -203,7 +219,9 @@ export async function buildCity(zones, onProgress, signal) {
     markers = [],
     zoneHeat = new Map(),
     effects = new Map(),
-    labels = [];
+    labels = [],
+    hotspots = new Map(),
+    hotspotMarkers = new Map();
   zones.forEach((zone, index) => {
     const [x, z] = project(zone.center);
     const box = zone.bounds.map(project);
@@ -244,6 +262,24 @@ export async function buildCity(zones, onProgress, signal) {
         meshes.set(zone.id, m);
       }
     }
+    // Where this zone's real building footprints actually cluster — an
+    // area-weighted centroid of the mapped geometry, not a guess. A cooling
+    // measure does the most good where the built mass (and so the heat
+    // retention) is greatest, so this is the point the game marks and
+    // rewards placing near.
+    const acc = hotspotAccum.get(zone.id);
+    const hotspot = acc.weight > 0 ? [acc.sx / acc.weight, acc.sz / acc.weight] : [x, z];
+    hotspots.set(zone.id, hotspot);
+    const hotMarker = new THREE.Mesh(
+      new THREE.RingGeometry(0.16, 0.2, 28),
+      basic("#ffd76a", 0.85),
+    );
+    hotMarker.rotation.x = -Math.PI / 2;
+    hotMarker.position.set(hotspot[0], 0.075, hotspot[1]);
+    hotMarker.visible = false;
+    base.add(hotMarker);
+    hotspotMarkers.set(zone.id, hotMarker);
+
     const greenDisc = new THREE.Mesh(
       new THREE.CircleGeometry(0.2 + zone.green_cover_pct / 55, 24),
       basic("#57df94", 0.24),
@@ -368,6 +404,10 @@ export async function buildCity(zones, onProgress, signal) {
         ring.position.set(x, 0.34, z);
         ring.visible = true;
       }
+      for (const [zoneId, marker] of hotspotMarkers) marker.visible = zoneId === id;
+    },
+    hotspotFor(id) {
+      return hotspots.get(id) || null;
     },
     apply(id, selected, drop) {
       const group = effects.get(id);

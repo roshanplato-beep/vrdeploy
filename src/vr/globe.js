@@ -189,6 +189,51 @@ export function createGlobe() {
   orbitRing.group.rotation.x = Math.PI / 2.2;
   root.add(orbitRing.group);
 
+  // --- Thermal toggle -------------------------------------------------------
+  // Real NASA MODIS land-surface-temperature imagery, fetched live from
+  // GIBS (a public, keyless, CORS-open service) and painted straight onto
+  // the sphere in place of the stylised map. This is an actual satellite
+  // reading, not a decoration: gaps in it are cloud cover the instrument
+  // couldn't see through, not zero temperature, and the legend says so.
+  // If the fetch fails — offline, blocked, or GIBS itself unreachable — the
+  // globe stays on the stylised map and says the live layer is unavailable,
+  // rather than making up a plausible-looking thermal image.
+  const thermalCard = label(460, 170, 0.052);
+  thermalCard.sprite.position.copy(dir).multiplyScalar(-EARTH_RADIUS * 1.5);
+  thermalCard.sprite.userData.thermalToggle = true;
+  thermalCard.sprite.userData.halfSize = { x: 0.12, y: 0.045 };
+  root.add(thermalCard.sprite);
+
+  let thermalOn = false;
+  let thermalTexture = null;
+  let thermalLoading = false;
+  const writeThermalCard = (lines) => thermalCard.write(lines);
+  writeThermalCard([
+    ["🌡 THERMAL VIEW: OFF", 26, HOLO.ice, 700],
+    ["pinch to load live NASA data", 19, HOLO.white, 600],
+  ]);
+
+  function gibsUrl() {
+    // MODIS land-surface-temperature has 1-3 days of processing latency;
+    // asking for "today" reliably returns nothing, so this asks for three
+    // days ago, which is usually the most recent day fully published.
+    const date = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10);
+    const params = new URLSearchParams({
+      SERVICE: "WMS",
+      VERSION: "1.3.0",
+      REQUEST: "GetMap",
+      LAYERS: "MODIS_Terra_Land_Surface_Temp_Day",
+      CRS: "EPSG:4326",
+      BBOX: "-90,-180,90,180",
+      WIDTH: "2048",
+      HEIGHT: "1024",
+      FORMAT: "image/png",
+      TRANSPARENT: "TRUE",
+      TIME: date,
+    });
+    return { url: `https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi?${params}`, date };
+  }
+
   let t = 0;
   let spin = 0.06; // idle ambient rotation, rad/s
   let flash = markerRing;
@@ -203,8 +248,56 @@ export function createGlobe() {
     /** Objects a pointer may hit to rotate the globe or trigger entry. */
     grabTargets: [sphere],
     enterTargets: [marker, card.sprite],
+    thermalTargets: [thermalCard.sprite],
+    isThermalOn: () => thermalOn,
     setSpin(rate) {
       spin = rate;
+    },
+    /** Load (or clear) the live NASA thermal layer. Returns a promise the caller can ignore. */
+    async toggleThermal() {
+      if (thermalLoading) return;
+      if (thermalOn) {
+        thermalOn = false;
+        sphere.material.map = texture;
+        sphere.material.needsUpdate = true;
+        writeThermalCard([
+          ["🌡 THERMAL VIEW: OFF", 26, HOLO.ice, 700],
+          ["pinch to load live NASA data", 19, HOLO.white, 600],
+        ]);
+        return;
+      }
+      thermalLoading = true;
+      writeThermalCard([
+        ["🌡 LOADING…", 26, HOLO.amber, 700],
+        ["NASA GIBS · MODIS Terra LST", 18, HOLO.white, 600],
+      ]);
+      const { url, date } = gibsUrl();
+      try {
+        if (!thermalTexture) {
+          const loader = new THREE.TextureLoader();
+          loader.setCrossOrigin("anonymous");
+          thermalTexture = await new Promise((resolve, reject) => {
+            loader.load(url, resolve, undefined, reject);
+          });
+          thermalTexture.colorSpace = THREE.SRGBColorSpace;
+        }
+        sphere.material.map = thermalTexture;
+        sphere.material.needsUpdate = true;
+        thermalOn = true;
+        writeThermalCard([
+          ["🌡 THERMAL VIEW: ON", 26, HOLO.hot, 700],
+          [`MODIS Terra LST · ${date} · NASA GIBS`, 16, HOLO.white, 600],
+          ["Dark gaps = cloud cover, not zero °C", 15, "#b6d3da", 500],
+        ]);
+      } catch {
+        writeThermalCard([
+          ["🌡 THERMAL VIEW UNAVAILABLE", 23, HOLO.hot, 700],
+          ["Live NASA imagery could not be reached", 18, HOLO.white, 600],
+          ["Showing the stylised map instead", 16, "#b6d3da", 500],
+        ]);
+      } finally {
+        thermalLoading = false;
+      }
     },
     update(dt, time) {
       t = time;
@@ -216,10 +309,13 @@ export function createGlobe() {
       if (markerRing.mesh.material.opacity <= 0.01) flash.fire();
       card.sprite.material.opacity = 0.82 + 0.18 * Math.sin(time * 2.2);
       marker.scale.setScalar(1 + 0.25 * Math.sin(time * 3));
+      thermalCard.sprite.material.opacity = 0.82 + 0.18 * Math.sin(time * 2.2 + 1.5);
     },
     dispose() {
       texture.dispose();
+      thermalTexture?.dispose();
       card.dispose();
+      thermalCard.dispose();
       orbitRing.dispose();
       markerRing.dispose();
       root.traverse((o) => {
