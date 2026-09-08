@@ -3,6 +3,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { buildCity } from "./city";
 import { createGlobe } from "./globe";
 import { Panel, MIN_TARGET, INK } from "./panel";
+import { label } from "./holo";
 import { createPointers } from "./xr-input";
 import { createGame } from "./game";
 import { money, project } from "./model";
@@ -271,6 +272,15 @@ export async function createExperience(
   hoverQuad.renderOrder = 51;
   hoverQuad.visible = false;
   scene.add(hoverQuad);
+
+  // A last-resort diagnostic readout, hidden until the render loop's safety
+  // wrapper catches something. There is no way to see a devtools console in
+  // a headset, so this is the only way an in-the-field failure becomes
+  // legible at all: parented to the camera every frame, always in view.
+  const diag = label(560, 220, 0.05);
+  diag.sprite.visible = false;
+  diag.sprite.renderOrder = 200;
+  diag.sprite.material.depthTest = false;
 
   const handles = [];
   const handleMaterial = new THREE.MeshBasicMaterial({ color: "#54f4da" });
@@ -1001,21 +1011,45 @@ export async function createExperience(
   renderer.xr.addEventListener("sessionstart", sessionStart);
   renderer.xr.addEventListener("sessionend", sessionEnd);
 
+  // Isolate each per-frame subsystem behind its own try/catch, and always
+  // reach renderer.render() no matter what. In WebXR specifically, a frame
+  // that never renders shows solid black on the compositor (worse than a
+  // regular 2D canvas freeze, which at least keeps the last good frame up),
+  // and if the throw escapes setAnimationLoop the browser may stop calling
+  // it entirely — one bad frame from a real-hardware code path we couldn't
+  // simulate in a flat browser would take everything down. The wrapper
+  // reports the last error to the diagnostic overlay so the user can see it
+  // in the headset without console access, then keeps rendering.
+  const safe = (name, fn) => {
+    try {
+      fn();
+    } catch (e) {
+      const msg = `${name}: ${e?.message || e}`;
+      // Only rewrite the overlay when the error changes, so a persistent
+      // throw doesn't churn the canvas texture every frame.
+      if (state.lastError !== msg) {
+        state.lastError = msg;
+        try {
+          diag.write([
+            ["⚠ RUNTIME ERROR", 24, "#ff9757", 700],
+            [name, 20, "#eafff8", 600],
+            [String(e?.message || e).slice(0, 80), 16, "#b6d3da", 500],
+          ]);
+          diag.sprite.visible = true;
+        } catch { /* diagnostic itself must never throw */ }
+      }
+      if (typeof console !== "undefined") console.error("[render-loop]", name, e);
+    }
+  };
+
   renderer.setAnimationLoop((time) => {
     if (disposed) return;
     const dt = Math.min(0.05, (time - lastTime) / 1000 || 0.016);
     lastTime = time;
 
-    // Dive transition: the globe shrinks toward its Chennai point and fades
-    // while the city fades in and grows to tabletop scale in front of the
-    // player. Purely a tween — the underlying interaction state (which
-    // measures are placed, etc.) never changes during it.
-    if (state.mode === "diving") {
+    safe("dive", () => {
+      if (state.mode !== "diving") return;
       diveT = Math.min(1, diveT + dt / 1.1);
-      // Scale-only tween: the globe shrinks away, the city grows in from
-      // nothing at the same time. No material opacity is touched, so nothing
-      // needs restoring afterwards — the next `ascend()` shows the globe at
-      // full scale and full opacity exactly as it started.
       const eased = 1 - Math.pow(1 - diveT, 3);
       globe.root.scale.setScalar(Math.max(0.0001, GLOBE_SCALE * (1 - eased)));
       if (!city.root.visible) city.root.visible = true;
@@ -1034,36 +1068,58 @@ export async function createExperience(
         draw();
         publish();
       }
-    }
+    });
 
-    city.layers.forEach((l) => (l.position.y = THREE.MathUtils.damp(l.position.y, l.userData.targetY || 0, 6, dt)));
-    city.ring.rotation.z += dt * 0.5;
-    if (state.mode === "city") environment.followCity(city.root);
-    else if (state.mode === "globe") environment.followGlobe(globe.root, globe.radius);
-    if (state.mode !== "diving") globe.update(dt, time / 1000);
+    safe("layers", () => {
+      city.layers.forEach((l) => (l.position.y = THREE.MathUtils.damp(l.position.y, l.userData.targetY || 0, 6, dt)));
+      city.ring.rotation.z += dt * 0.5;
+    });
+    safe("environment", () => {
+      if (state.mode === "city") environment.followCity(city.root);
+      else if (state.mode === "globe") environment.followGlobe(globe.root, globe.radius);
+    });
+    safe("globe", () => {
+      if (state.mode !== "diving") globe.update(dt, time / 1000);
+    });
 
     const active = renderer.xr.isPresenting;
     if (active) {
-      pointers.update(hitTargets(), pokeTargets(), time);
-      updateHover();
-      attachWrist();
-      gestures();
-      fly(dt);
-    } else controls.update();
+      safe("pointers", () => pointers.update(hitTargets(), pokeTargets(), time));
+      safe("hover", updateHover);
+      safe("wrist", attachWrist);
+      safe("gestures", gestures);
+      safe("fly", () => fly(dt));
+    } else safe("controls", () => controls.update());
     const viewer = active ? renderer.xr.getCamera() : camera;
-    if (state.mode === "city" && game) game.update(dt, time / 1000, viewer, carryGroundHit());
-    if (state.mode === "city") city.updateLOD(viewer);
-    if (state.mode === "city") {
-      // The two floating windows track the city's own position (so dragging
-      // the tabletop carries them along) and always face whoever is looking,
-      // the same billboarding the solution cards use.
+    safe("game", () => {
+      if (state.mode === "city" && game) game.update(dt, time / 1000, viewer, carryGroundHit());
+    });
+    safe("lod", () => {
+      if (state.mode === "city") city.updateLOD(viewer);
+    });
+    safe("panels", () => {
+      if (state.mode !== "city") return;
       viewer.getWorldPosition(panelCam);
       city.root.getWorldPosition(panelAnchor);
       leftPanel.mesh.position.copy(panelAnchor).add(new THREE.Vector3(-1.05, 0.34, 0.15));
       rightPanel.mesh.position.copy(panelAnchor).add(new THREE.Vector3(1.05, 0.34, 0.15));
       leftPanel.mesh.lookAt(panelCam);
       rightPanel.mesh.lookAt(panelCam);
-    }
+    });
+    safe("diag", () => {
+      // Diagnostic overlay: parented to the camera so it always sits in
+      // view, hidden until an error occurs. Small offset so it hangs in
+      // the lower-left corner of the field of view where it doesn't cover
+      // the game but is unmistakable when present.
+      if (diag.sprite.parent !== viewer) viewer.add(diag.sprite);
+      diag.sprite.position.set(-0.22, -0.18, -0.6);
+    });
+    // The render call itself is outside `safe`. If three.js's own render
+    // throws (a genuinely broken scene graph), there is nothing useful to
+    // do beyond letting the error surface — retrying it every frame with
+    // the same broken state would just spam logs. This is the only path
+    // that can leave the compositor showing black; every other path above
+    // now recovers.
     renderer.render(scene, camera);
     frameCount++;
     frameTime += dt;
@@ -1117,6 +1173,8 @@ export async function createExperience(
     renderer.domElement.removeEventListener("pointerup", up);
     renderer.domElement.removeEventListener("pointermove", move);
     panels.forEach((p) => p.dispose());
+    diag.dispose();
+    diag.sprite.removeFromParent();
     city.dispose();
     scene.traverse((o) => {
       o.geometry?.dispose();
