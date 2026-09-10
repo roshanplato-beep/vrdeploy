@@ -1,0 +1,26 @@
+# Unity generated — only Assets/ and (if you make one) ProjectSettings/Packages
+# are tracked here. This folder is a drop-in Assets payload, not a full project.
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+[Mm]emoryCaptures/
+[Rr]ecordings/
+.vs/
+.gradle/
+*.csproj
+*.sln
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.apk
+*.aab
+*.unitypackage
+*.app
